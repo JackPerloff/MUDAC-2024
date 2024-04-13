@@ -1,0 +1,132 @@
+---
+title: "Analysis5"
+output: html_document
+date: "2024-04-07"
+---
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(corrplot)
+library(fmsb)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+CPI_df = read_csv("CropProductivityIndex.csv") %>%
+  select(County, CPI)
+```
+
+```{r}
+land_df = read_csv("TillableLand.csv") %>%
+  rename(tillable = "Total Class 2a Tillable Acres")
+
+crops_df = read_csv("crops.csv") %>%
+  rename(
+    corn_harvested = "CORN, GRAIN - ACRES HARVESTED",
+    corn_produced = "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+    corn_grain_per_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+    soybeans_harvested = "SOYBEANS - ACRES HARVESTED", 
+    soybeans_produced = "SOYBEANS - PRODUCTION, MEASURED IN BU",
+    soybeans_grain_per_acre = "SOYBEANS - YIELD, MEASURED IN BU / ACRE") %>%
+  select(Year, County, corn_harvested, corn_produced, corn_grain_per_acre, soybeans_harvested, soybeans_produced, soybeans_grain_per_acre) %>%
+  mutate(
+    across(where(is.numeric), ~replace_na(., 0))
+  ) %>%
+  mutate(
+    soybeans_grain_per_acre = soybeans_grain_per_acre * 30.027682980816,
+    corn_grain_per_acre = corn_grain_per_acre * 30.027682980816
+  )
+
+fertilizer_df = read_csv("FertilizerConsumption.csv") %>%
+  rename(urea = "Urea (46-0-0)",
+         potash = "Potash (0-0-60)",
+         monammonium_phosphate = "Monammonium Phosphate (MAP) (11-52-0)",
+         diammonium_phosphate = "Diammonium Phosphate (DAP) (18-46-0)",
+         ammonia = "Ammonia (82-0-0)",
+         district = "Ag District")
+```
+
+```{r}
+fl_df <- inner_join(fertilizer_df, land_df, by = c("County", "Year")) %>%
+  select(Year, County, district, urea, potash, monammonium_phosphate, diammonium_phosphate, ammonia, tillable)
+flc_df <- inner_join(fl_df, crops_df, by = c("Year", "County")) %>%
+  mutate(ammonia_per_acre = (ammonia/tillable)*907.1847,
+         potash_per_acre = (potash/tillable)*907.1847,
+         monammonium_phosphate_per_acre = (monammonium_phosphate/tillable)*907.1847,
+         diammonium_phosphate_per_acre = (diammonium_phosphate/tillable)*907.1847,
+         urea_per_acre = (urea/tillable)*907.1847)
+flc_df <- left_join(flc_df, CPI_df, by = "County")
+```
+
+```{r}
+sum_flc_df <- flc_df %>%
+  group_by(County) %>%
+  summarize(mean_urea_per_acre = mean(urea_per_acre, na.rm = TRUE),
+            mean_potash_per_acre = mean(potash_per_acre, na.rm = TRUE),
+            mean_ammonia_per_acre = mean(ammonia_per_acre, na.rm = TRUE),
+            mean_diammonium_phosphate_per_acre = mean(diammonium_phosphate_per_acre, na.rm = TRUE),
+            mean_monammonium_phosphate_per_acre = mean(monammonium_phosphate_per_acre, na.rm = TRUE),
+            CPI = unique(CPI),
+            mean_corn_grain_per_acre = mean(corn_grain_per_acre, na.rm = TRUE),
+            mean_soybeans_grain_per_acre = mean(soybeans_grain_per_acre, na.rm = TRUE)
+            ) %>%
+  rename("Urea Per Acre" = mean_urea_per_acre,
+         "Potash Per Acre" = mean_potash_per_acre,
+         "Ammonia Per Acre" = mean_ammonia_per_acre,
+         "Diammonium Phosphate Per Acre" = mean_diammonium_phosphate_per_acre,
+         "Monammonium Phosphate Per Acre" = mean_monammonium_phosphate_per_acre,
+         "CPI" = CPI,
+         "Corn Grain Per Acre" = mean_corn_grain_per_acre,
+         "Soybeans Grain Per Acre" = mean_soybeans_grain_per_acre
+         )
+```
+
+```{r}
+data = sum_flc_df %>%
+  select(-County)
+cor(data)
+
+corrplot(cor(data), method = "color", type = "upper", tl.cex = 0.7)
+```
+
+```{r}
+library(sf)
+ag = read_csv("AgDistricts.csv")
+mn_shapefile <- st_read("./shp_bdry_counties_in_minnesota/mn_county_boundaries_multipart.shp")
+mn_shapefile$COUNTYNAME <- toupper(mn_shapefile$COUNTYNAME)
+map_data <- left_join(ag, mn_shapefile,by = c("County" = "COUNTYNAME"))
+flc_map_df = left_join(flc_df, map_data, by = "County")
+```
+
+```{r}
+flc_map_sf <- st_as_sf(flc_map_df)
+
+ggplot(data = flc_map_sf) +
+  geom_sf(aes(fill = CPI)) +
+  scale_fill_continuous(name = "CPI", low = "lightgreen", high = "darkgreen") +
+  theme_minimal()
+```
+
+```{r}
+flc_map_sf <- st_as_sf(flc_map_df)
+
+ggplot(data = flc_map_sf) +
+  geom_sf(aes(fill = soybeans_grain_per_acre)) +
+  scale_fill_continuous(name = "Soybeans Kilograms Per Acre", low = "lightpink", high = "darkred") +
+  theme_minimal()
+```
+
+```{r}
+flc_map_sf <- st_as_sf(flc_map_df)
+
+ggplot(data = flc_map_sf) +
+  geom_sf(aes(fill = corn_grain_per_acre)) +
+  scale_fill_continuous(name = "Corn Kilograms Per Acre", low = "lightblue", high = "darkblue") +
+  theme_minimal()
+```

@@ -1,0 +1,204 @@
+---
+title: "Analysis1"
+output: html_document
+date: "2024-04-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+```
+
+```{r}
+corn_df = read_csv("crops.csv")
+```
+
+```{r}
+bushels_df = corn_df %>%
+  select("County", "Ag District", "Year", "CORN, GRAIN - PRODUCTION, MEASURED IN BU", "SOYBEANS - PRODUCTION, MEASURED IN BU") %>%
+  rename(total_corn = "CORN, GRAIN - PRODUCTION, MEASURED IN BU", district = "Ag District", total_soybeans = "SOYBEANS - PRODUCTION, MEASURED IN BU")
+```
+
+# Missing County Information
+
+```{r}
+bushels_df %>%
+  group_by(Year) %>%
+  summarize(num_na = sum(is.na(total_corn)), total=n(), prop_missing = num_na/total)
+```
+
+- This may effect the total number of corn/soybean bushels recorded
+- Some counties may be missing. Either it was not recorded or maybe that county did not harvest that type of crop
+
+```{r}
+replace_na_with_mean_or_zero <- function(x) {
+  if (any(!is.na(x))) {
+    x[is.na(x)] <- mean(x, na.rm = TRUE)
+    return(x)
+  } else {
+    x[is.na(x)] <- 0
+    return(x)
+  }
+}
+
+crops_df = read_csv("crops.csv") %>%
+  rename(
+    sugar_harvest = "SUGARBEETS - ACRES HARVESTED",
+    sugar_planted = "SUGARBEETS - ACRES PLANTED",
+    sugar_produced = "SUGARBEETS - PRODUCTION, MEASURED IN TONS",
+    sugar_sucrose = "SUGARBEETS - SUCROSE, MEASURED IN PCT",
+    sugar_per_acre = "SUGARBEETS - YIELD, MEASURED IN TONS / ACRE"
+  ) %>%
+  group_by(County) %>%
+  mutate(sugar_harvest = replace_na_with_mean_or_zero(sugar_harvest),
+         sugar_planted = replace_na_with_mean_or_zero(sugar_planted),
+         sugar_produced = replace_na_with_mean_or_zero(sugar_produced),
+         sugar_sucrose = replace_na_with_mean_or_zero(sugar_sucrose),
+         sugar_per_acre = replace_na_with_mean_or_zero(sugar_per_acre),
+         ) %>%
+  rename(
+    corn_harvested = "CORN, GRAIN - ACRES HARVESTED",
+    corn_produced = "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+    corn_grain_per_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+    soybeans_harvested = "SOYBEANS - ACRES HARVESTED", 
+    soybeans_produced = "SOYBEANS - PRODUCTION, MEASURED IN BU",
+    soybeans_grain_per_acre = "SOYBEANS - YIELD, MEASURED IN BU / ACRE") %>%
+  mutate(
+    across(where(is.numeric), ~replace_na(., 0))
+  ) %>%
+  mutate(
+    soybeans_grain_per_acre = soybeans_grain_per_acre * 30.027682980816,
+    corn_grain_per_acre = corn_grain_per_acre * 30.027682980816,
+    corn_produced = corn_produced * 56 / 2000,
+    soybeans_produced = soybeans_produced * 60 /2000
+  )
+
+```
+
+# Yearly Corn and SoyBean Total Production Trends
+
+```{r}
+state_corn_bushels_df <- crops_df %>%
+  group_by(Year) %>%
+  filter(!is.na(corn_produced)) %>%
+  summarize(corn = sum(corn_produced) / 1000) 
+
+state_soybeans_bushels_df <- crops_df %>%
+  group_by(Year) %>%
+  filter(!is.na(soybeans_produced)) %>%
+  summarize(soybeans = sum(soybeans_produced) / 1000) 
+
+state_sugar_bushels_df <- crops_df %>%
+  group_by(Year) %>%
+  filter(!is.na(sugar_produced)) %>%
+  summarize(sugarbeets = sum(sugar_produced) / 1000)  # Corrected column name
+
+combined_df <- merge(state_corn_bushels_df, state_soybeans_bushels_df, by = "Year", all = TRUE)
+combined_df <- merge(combined_df, state_sugar_bushels_df, by = "Year", all = TRUE)
+
+combined_df_long <- tidyr::pivot_longer(combined_df, 
+                                        cols = c("corn", "soybeans", "sugarbeets"), 
+                                        names_to = "Crop", 
+                                        values_to = "Production")
+
+ggplot(combined_df_long, aes(x = Year, y = Production, color = Crop)) +
+  geom_line(size = 1) +  
+  geom_point(size = 2) +  
+  labs(x = "Year", y = "Tons Produced (Thousands)",  
+       title = "Total Tons of Crop Produced Over Time") +
+  scale_color_manual(values = c("corn" = "#FF5733", "soybeans" = "#33A1FF", "sugarbeets" = "green"), 
+                     limits = c("corn", "soybeans", "sugarbeets")) +  # Corrected color values
+  theme_minimal() +  
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),  
+    axis.title = element_text(size = 14, face = "bold"),  
+    axis.text = element_text(size = 12),  
+    legend.title = element_text(size = 14, face = "bold"),  
+    legend.text = element_text(size = 12) 
+  )
+```
+
+```{r}
+cor(state_soybeans_bushels_df$soybeans, state_corn_bushels_df$corn)
+```
+
+Observations:
+- A lot more corn is produced than soybeans
+- Both corn and soybeans seem to be following a similar trend(increase and decrease at similar times). This suggests that weather and environmental factors may influence both crops.
+- There is a correlation of 83.2% which means that the total production of both is strongly correlated.
+
+# Crop per Acre Analysis
+
+```{r}
+crop_df <- corn_df %>%
+  rename(
+    corn_harvested = "CORN, GRAIN - ACRES HARVESTED",
+    corn_produced = "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+    corn_grain_per_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+    soybeans_harvested = "SOYBEANS - ACRES HARVESTED", 
+    soybeans_produced = "SOYBEANS - PRODUCTION, MEASURED IN BU",
+    soybeans_grain_per_acre = "SOYBEANS - YIELD, MEASURED IN BU / ACRE") %>%
+  select(Year, corn_harvested, corn_produced, corn_grain_per_acre, soybeans_harvested, soybeans_produced, soybeans_grain_per_acre) %>%
+  mutate(
+    across(where(is.numeric), ~replace_na(., 0))
+  )
+```
+
+```{r}
+grain_per_acre_df = crop_df %>%
+  group_by(Year) %>%
+  summarize(
+    total_corn_harvested = sum(corn_harvested),
+    total_corn_produced = sum(corn_produced),
+    total_soybeans_harvested = sum(soybeans_harvested),
+    total_soybeans_produced = sum(soybeans_produced)
+  ) %>%
+  mutate(
+    corn_per_acre = total_corn_produced/total_corn_harvested,
+    soybeans_per_acre = total_soybeans_produced/total_corn_harvested
+  )
+```
+
+```{r}
+ggplot(grain_per_acre_df, aes(x = Year)) +
+  geom_line(aes(y = corn_per_acre, color = "Corn")) +
+  geom_line(aes(y = soybeans_per_acre, color = "Soybeans")) +
+  labs(x = "Year", y = "Bushels per Acre", color = "Crop", title = "Corn and Soybean Bushel Production per Acre Over Years") +
+  scale_color_manual(values = c("Corn" = "blue", "Soybeans" = "red"))
+```
+
+Observation:
+- We can grow more corn per acre than we can grow soybeans per acre
+- The trends of crops per acre seem strongly correlated
+
+```{r}
+cor(grain_per_acre_df$corn_per_acre, grain_per_acre_df$soybeans_per_acre)
+```
+
+- They are strongly correlated
+
+# Acre Usage for each type of crop over the years
+```{r}
+ggplot(grain_per_acre_df, aes(x = Year)) +
+  geom_line(aes(y = total_corn_harvested, color = "Corn")) +
+  geom_line(aes(y = total_soybeans_harvested, color = "Soybeans")) +
+  labs(x = "Year", y = "Acres Harvested", color = "Crop", title = "Total Acres Harvested for Corn and Soybeans Over Time") +
+  scale_color_manual(values = c("Corn" = "blue", "Soybeans" = "red"))
+```
+
+```{r}
+grain_per_acre_df = grain_per_acre_df %>%
+  mutate(total_harvested = total_corn_harvested + total_soybeans_harvested)
+
+ggplot(grain_per_acre_df, aes(x = Year)) +
+  geom_line(aes(y = total_harvested)) +
+  labs(x = "Year", y = "Acres Harvested", title = "Total Acres Harvested Over Time")
+```
+
+TODO: Visualizing the changes in Total and Per Acre to better understand that they are strongly correlated.

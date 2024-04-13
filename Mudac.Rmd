@@ -1,0 +1,154 @@
+---
+title: "Mudac"
+output: html_document
+date: "2024-04-06"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+fertilizer = read_csv('FertilizerConsumption.csv') %>% 
+  rename(urea = "Urea (46-0-0)",
+         potash = "Potash (0-0-60)",
+         monammonium_phosphate = "Monammonium Phosphate (MAP) (11-52-0)",
+         diammonium_phosphate = "Diammonium Phosphate (DAP) (18-46-0)",
+         ammonia = "Ammonia (82-0-0)")
+cpi = read.csv('CropProductivityIndex.csv')
+crops = read_csv('Crops.csv') %>% 
+  rename(
+    corn_harvested = "CORN, GRAIN - ACRES HARVESTED",
+    corn_produced = "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+    corn_grain_per_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+    soybeans_harvested = "SOYBEANS - ACRES HARVESTED", 
+    soybeans_produced = "SOYBEANS - PRODUCTION, MEASURED IN BU",
+    soybeans_grain_per_acre = "SOYBEANS - YIELD, MEASURED IN BU / ACRE") %>% 
+  mutate(
+    across(where(is.numeric), ~replace_na(., 0))
+  )
+combo = inner_join(crops, cpi, by = 'County')
+```
+
+```{r}
+ahhh = crops %>%
+  group_by(County) %>% 
+  summarize(
+    total_corn_harvested = sum(corn_harvested),
+    total_corn_produced = sum(corn_produced),
+    total_soybeans_harvested = sum(soybeans_harvested),
+    total_soybeans_produced = sum(soybeans_produced)
+  ) %>%
+  mutate(
+    corn_per_acre = total_corn_produced/total_corn_harvested,
+    soybeans_per_acre = total_soybeans_produced/total_corn_harvested
+  )%>% 
+  inner_join(cpi, by = 'County') %>% 
+  filter(County != 'LAKE OF THE WOODS')
+```
+
+```{r}
+ggplot(ahhh, aes(x = corn_per_acre, y = CPI)) + 
+  geom_point()
+```
+
+```{r}
+ggplot(ahhh, aes(x = soybeans_per_acre, y = CPI)) + 
+  geom_point()
+```
+
+```{r}
+crops_2015 = crops %>% 
+  filter(Year == 2015)
+lil_uzi_fert = fertilizer %>% 
+  filter(Year == 2015)
+
+run_2015 = inner_join(crops_2015, lil_uzi_fert) %>% 
+  pivot_longer(cols = c('monammonium_phosphate', 'ammonia'), names_to = 'Fertilizer_Type', values_to = 'Usage')
+```
+
+```{r}
+ggplot(run_2015, aes(x = corn_grain_per_acre, y = Usage)) + 
+  geom_point(aes(color = Fertilizer_Type))
+```
+
+```{r}
+ggplot(run_2015, aes(x = soybeans_grain_per_acre, y = Usage)) + 
+  geom_point(aes(color = Fertilizer_Type))
+```
+
+```{r}
+animals_df = read_csv('clean_animal.csv') %>% 
+  rename(
+    'Beef Cows' = "CATTLE, COWS, BEEF - INVENTORY",
+    'Dairy Cows' = 'CATTLE, COWS, MILK - INVENTORY',
+    'Feedlot Cows' = 'CATTLE, ON FEED - INVENTORY',
+    'Hogs' = 'HOGS - INVENTORY',
+    'Turkeys' = 'TURKEYS - INVENTORY'
+  )
+```
+
+```{r}
+manure_production_rates = list(
+  'Beef Cows' = 10.8,
+  'Dairy Cows' = 14.6,
+  'Feedlot Cows' = 11.9,
+  'Hogs' = 11.5,
+  'Turkeys' = 8
+)
+```
+
+```{r}
+for (i in 1:nrow(animals_df)) {
+  # Calculate manure production for each animal type
+  manure <- 0
+  for (animal in names(manure_production_rates)) {
+    manure <- manure + animals_df[i, animal] * manure_production_rates[[animal]]
+  }
+  
+  # Assign the calculated manure production to the 'Manure' column for the current row
+  animals_df[i, 'Manure'] <- manure
+}
+```
+
+```{r}
+animals_df = animals_df %>% 
+  rename('Year' = 'Year of County_Animals')
+```
+
+```{r}
+manure_stuff = animals_df %>% 
+  group_by(`County of County_Animals`) %>% 
+  summarize(avg_manure = mean(Manure) / 1000) %>% 
+  arrange(desc(avg_manure))
+
+manure_stuff$avg_manure = format(manure_stuff$avg_manure, scientific = FALSE)
+```
+
+```{r}
+manure_stuff = manure_stuff %>% 
+  rename(
+    'County' = "County of County_Animals",
+    'Average Manure Production, in Thousands of Tons' = 'avg_manure',
+    'Year' = 'Year of County_Animals'
+  )
+```
+
+```{r}
+all_fert = inner_join(fertilizer, animals_df)
+  
+```
+
+```{r}
+# Create a new column 'synthetic_fertilizer' by summing values of specified columns for each row
+all_fert$synthetic_fertilizer <- rowSums(all_fert[, c('urea', 'potash', 'diammonium_phosphate', 'monammonium_phosphate', 'ammonia')], na.rm = TRUE)
+```
+
+```{r}
+ggplot(all_fert, aes(x = synthetic_fertilizer, y = Manure)) + 
+  geom_point()
+```
+

@@ -1,0 +1,294 @@
+---
+title: "analysis4"
+output: html_document
+date: "2024-04-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(corrplot)
+```
+
+```{r}
+land_df = read_csv("TillableLand.csv") %>%
+  rename(tillable = "Total Class 2a Tillable Acres")
+
+crops_df = read_csv("crops.csv") %>%
+  rename(
+    corn_harvested = "CORN, GRAIN - ACRES HARVESTED",
+    corn_produced = "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+    corn_grain_per_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+    soybeans_harvested = "SOYBEANS - ACRES HARVESTED", 
+    soybeans_produced = "SOYBEANS - PRODUCTION, MEASURED IN BU",
+    soybeans_grain_per_acre = "SOYBEANS - YIELD, MEASURED IN BU / ACRE") %>%
+  select(Year, County, corn_harvested, corn_produced, corn_grain_per_acre, soybeans_harvested, soybeans_produced, soybeans_grain_per_acre) %>%
+  mutate(
+    across(where(is.numeric), ~replace_na(., 0))
+  ) %>%
+  mutate(
+    soybeans_grain_per_acre = soybeans_grain_per_acre * 30.027682980816,
+    corn_grain_per_acre = corn_grain_per_acre * 30.027682980816
+  )
+
+fertilizer_df = read_csv("FertilizerConsumption.csv") %>%
+  rename(urea = "Urea (46-0-0)",
+         potash = "Potash (0-0-60)",
+         monammonium_phosphate = "Monammonium Phosphate (MAP) (11-52-0)",
+         diammonium_phosphate = "Diammonium Phosphate (DAP) (18-46-0)",
+         ammonia = "Ammonia (82-0-0)",
+         district = "Ag District")
+```
+
+```{r}
+fl_df <- inner_join(fertilizer_df, land_df, by = c("County", "Year")) %>%
+  select(Year, County, district, urea, potash, monammonium_phosphate, diammonium_phosphate, ammonia, tillable)
+flc_df <- inner_join(fl_df, crops_df, by = c("Year", "County")) %>%
+  mutate(ammonia_per_acre = (ammonia/tillable)*907.1847,
+         potash_per_acre = (potash/tillable)*907.1847,
+         monammonium_phosphate_per_acre = (monammonium_phosphate/tillable)*907.1847,
+         diammonium_phosphate_per_acre = (diammonium_phosphate/tillable)*907.1847,
+         urea_per_acre = (urea/tillable)*907.1847)
+```
+
+Let $X$ represent the mean crop yield per acre for each county, and $\mu$ represent the true average mean crop yield for each district(The true average mean crop yield per acre for all counties). We want to investigate whether it is reasonable to assume that the distribution of $X$ is normally distributed.
+
+This will allow us to perform hypothesis tests on $\mu$ between districts and create a ranking of the districts with the best crop yield per acre.
+
+```{r}
+county_mean_yield <- flc_df %>%
+  group_by(County, district) %>%
+  summarize(mean_corn_grain_per_acre = mean(corn_grain_per_acre))
+```
+
+```{r}
+require(car)
+by_district <- split(county_mean_yield$mean_corn_grain_per_acre, county_mean_yield$district)
+
+par(mfrow=c(3, 3))
+
+for (i in seq_along(by_district)) {
+  qqPlot(by_district[[i]], main=paste("QQ Plot for District", unique(county_mean_yield$district)[i]), ylab="Sample Quantiles", xlab="Theoretical Quantiles")
+}
+```
+
+Central only has one point so it will not be included. The QQPlots suggest that it is reasonable to assume that the distribution of mean crop yields per acre over all years for each county in the 8 districts is normally distributed.
+
+Assumptions
+1. Random and independent IIDs. The randomness and independence is based on the USDA data collection process which it is reasonable to assume that it is as they identify different crop acres to sample in different locations in a county. 
+2. The mean crop yields per acre over all years for each county in the 8 districts is normally distributed so $\bar{X}$ is assumed to be normally distributed
+
+Hypothesis Test: one sided t-test at a 5% significance level
+
+$H_o: \mu_1 \le \mu_2$
+
+$H_a: \mu_1 > \mu_2$
+
+```{r}
+district_avg_yield <- flc_df %>%
+  filter(district != "CENTRAL") %>%
+  group_by(district) %>%
+  summarize(avg_yield = mean(corn_grain_per_acre))
+
+t_test_df <- data.frame(district1 = character(), district2 = character(), p_value = numeric(), stringsAsFactors = FALSE)
+
+districts <- unique(district_avg_yield$district)
+for (i in 1:(length(districts)-1)) {
+  for (j in (i+1):length(districts)) {
+    district1_data <- flc_df$corn_grain_per_acre[flc_df$district == districts[i]]
+    district2_data <- flc_df$corn_grain_per_acre[flc_df$district == districts[j]]
+    t_test_result <- t.test(district1_data, district2_data, alternative = "greater", var.equal=FALSE)
+    t_test_df <- rbind(t_test_df, data.frame(district1 = districts[i], district2 = districts[j], p_value = t_test_result$p.value))
+  }
+}
+```
+
+```{r}
+t_test_df = t_test_df %>%
+  mutate(significance = ifelse(p_value < 0.05, 1, 0))
+
+district_ranking <- t_test_df %>%
+  group_by(district1) %>%
+  summarize(rank_score = sum(as.numeric(significance)))
+
+district_ranking <- district_ranking %>%
+  arrange(desc(rank_score))
+
+knitr::kable(district_ranking, format = "markdown")
+```
+
+Lets say we don't want to assume the normal distribution. Than we will use a t-bootstrap test instead and still do not assume equal variance.
+
+```{r}
+boottwo = function(dat1, dat2, nboot) {
+bootstat = numeric(nboot) #Make Empty Vector for t* to fill 
+  obsdiff = mean(dat1) - mean(dat2)
+  n1 = length(dat1)
+  n2 = length(dat2)
+  for(i in 1:nboot) {
+    samp1 = sample(dat1, size = n1, replace = T)
+    samp2 = sample(dat2, size = n2, replace = T)
+    bootmean1 = mean(samp1)
+    bootmean2 = mean(samp2)
+    bootvar1 = var(samp1)
+    bootvar2 = var(samp2)
+    bootstat[i] = ((bootmean1 - bootmean2) - obsdiff)/sqrt((bootvar1/n1) + (bootvar2/n2))
+  }
+  return(bootstat)
+}
+```
+
+```{r}
+set.seed(50)
+nboot=5000
+
+bootstrap_t_df <- data.frame(district1 = character(), district2 = character(), p_value = numeric(), stringsAsFactors = FALSE)
+
+for (i in 1:(length(districts)-1)) {
+  for (j in (i+1):length(districts)) {
+    district1_data <- flc_df$corn_grain_per_acre[flc_df$district == districts[i]]
+    district2_data <- flc_df$corn_grain_per_acre[flc_df$district == districts[j]]
+    
+    xbar_1 <- mean(district1_data)
+    xbar_2 <- mean(district2_data)
+    n_1 <- length(district1_data)
+    n_2 <- length(district2_data)
+    s_1 <- sd(district1_data)
+    s_2 <- sd(district2_data)
+    
+    PE <- xbar_1 - xbar_2
+    SE <- sqrt(((s_1^2)/n_1) + ((s_2^2)/n_2))
+    t_stat <- PE / SE
+    
+    dist <- boottwo(district1_data, district2_data, nboot)
+    
+    p_value <- sum(dist >= t_stat) / nboot
+    
+    bootstrap_t_df <- rbind(bootstrap_t_df, data.frame(district1 = districts[i], district2 = districts[j], p_value = p_value))
+  }
+}
+```
+
+```{r}
+bootstrap_t_df = bootstrap_t_df %>%
+  mutate(significance = ifelse(p_value < 0.05, 1, 0))
+
+district_ranking <- bootstrap_t_df %>%
+  group_by(district1) %>%
+  summarize(rank_score = sum(as.numeric(significance)))
+
+boot_district_ranking <- district_ranking %>%
+  arrange(desc(rank_score))
+
+knitr::kable(boot_district_ranking, format = "markdown")
+```
+
+Same process of doing a t-test and bootstrap test for average soybeans per acre:
+
+```{r}
+county_mean_yield <- flc_df %>%
+  group_by(County, district) %>%
+  summarize(mean_soybean_grain_per_acre = mean(soybeans_grain_per_acre))
+```
+
+```{r}
+require(car)
+by_district <- split(county_mean_yield$mean_soybean_grain_per_acre, county_mean_yield$district)
+
+par(mfrow=c(3, 3))
+
+for (i in seq_along(by_district)) {
+  qqPlot(by_district[[i]], main=paste("QQ Plot for District", unique(county_mean_yield$district)[i]), ylab="Sample Quantiles", xlab="Theoretical Quantiles")
+}
+```
+
+Reasonable to assume normality.
+
+Hypothesis Test: one sided t-test at a 5% significance level
+
+$H_o: \mu_1 \le \mu_2$
+
+$H_a: \mu_1 > \mu_2$
+
+```{r}
+district_avg_yield <- flc_df %>%
+  filter(district != "CENTRAL") %>%
+  group_by(district) %>%
+  summarize(avg_yield = mean(soybeans_grain_per_acre))
+
+s_t_test_df <- data.frame(district1 = character(), district2 = character(), p_value = numeric(), stringsAsFactors = FALSE)
+
+districts <- unique(district_avg_yield$district)
+for (i in 1:(length(districts)-1)) {
+  for (j in (i+1):length(districts)) {
+    district1_data <- flc_df$soybeans_grain_per_acre[flc_df$district == districts[i]]
+    district2_data <- flc_df$soybeans_grain_per_acre[flc_df$district == districts[j]]
+    t_test_result <- t.test(district1_data, district2_data, alternative = "greater", var.equal=FALSE)
+    s_t_test_df <- rbind(s_t_test_df, data.frame(district1 = districts[i], district2 = districts[j], p_value = t_test_result$p.value))
+  }
+}
+```
+
+```{r}
+s_t_test_df = s_t_test_df %>%
+  mutate(significance = ifelse(p_value < 0.05, 1, 0))
+
+district_ranking <- s_t_test_df %>%
+  group_by(district1) %>%
+  summarize(rank_score = sum(as.numeric(significance)))
+
+district_ranking <- district_ranking %>%
+  arrange(desc(rank_score))
+
+knitr::kable(district_ranking, format = "markdown")
+```
+
+Lets say we don't want to assume the normal distribution. Than we will use a t-bootstrap test instead and still do not assume equal variance.
+
+```{r}
+s_bootstrap_t_df <- data.frame(district1 = character(), district2 = character(), p_value = numeric(), stringsAsFactors = FALSE)
+
+for (i in 1:(length(districts)-1)) {
+  for (j in (i+1):length(districts)) {
+    district1_data <- flc_df$soybeans_grain_per_acre[flc_df$district == districts[i]]
+    district2_data <- flc_df$soybeans_grain_per_acre[flc_df$district == districts[j]]
+    
+    xbar_1 <- mean(district1_data)
+    xbar_2 <- mean(district2_data)
+    n_1 <- length(district1_data)
+    n_2 <- length(district2_data)
+    s_1 <- sd(district1_data)
+    s_2 <- sd(district2_data)
+    
+    PE <- xbar_1 - xbar_2
+    SE <- sqrt(((s_1^2)/n_1) + ((s_2^2)/n_2))
+    t_stat <- PE / SE
+    
+    dist <- boottwo(district1_data, district2_data, nboot)
+    
+    p_value <- sum(dist >= t_stat) / nboot
+    
+    s_bootstrap_t_df <- rbind(s_bootstrap_t_df, data.frame(district1 = districts[i], district2 = districts[j], p_value = p_value))
+  }
+}
+```
+
+```{r}
+s_bootstrap_t_df = s_bootstrap_t_df %>%
+  mutate(significance = ifelse(p_value < 0.05, 1, 0))
+
+district_ranking <- s_bootstrap_t_df %>%
+  group_by(district1) %>%
+  summarize(rank_score = sum(as.numeric(significance)))
+
+boot_district_ranking <- district_ranking %>%
+  arrange(desc(rank_score))
+
+knitr::kable(boot_district_ranking, format = "markdown")
+```

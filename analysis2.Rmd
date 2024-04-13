@@ -1,0 +1,120 @@
+---
+title: "analysis2"
+output: html_document
+date: "2024-04-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+```
+
+```{r}
+fertilizer_df = read_csv("FertilizerConsumption.csv") %>%
+  rename(urea = "Urea (46-0-0)",
+         potash = "Potash (0-0-60)",
+         monammonium_phosphate = "Monammonium Phosphate (MAP) (11-52-0)",
+         diammonium_phosphate = "Diammonium Phosphate (DAP) (18-46-0)",
+         ammonia = "Ammonia (82-0-0)")
+```
+
+```{r}
+yearly_fertilizer_df = fertilizer_df %>%
+  group_by(Year) %>%
+  summarize(t_urea = sum(urea),
+            t_potash = sum(potash),
+            t_monammonium_phosphate = sum(monammonium_phosphate),
+            t_diammonium_phosphate = sum(diammonium_phosphate),
+            t_ammonia = sum(ammonia))
+```
+
+```{r}
+long_df <- pivot_longer(yearly_fertilizer_df, 
+                        cols = starts_with("t_"), 
+                        names_to = "Fertilizer", 
+                        values_to = "Total_Amount") %>%
+  mutate(Fertilizer = ifelse(Fertilizer == "t_ammonia", "ammonia",
+                      ifelse(Fertilizer == "t_potash", "potash", 
+                      ifelse(Fertilizer == "t_monammonium_phosphate", "monammonium_phosphate",
+                      ifelse(Fertilizer == "t_diammonium_phosphate", "diammonium_phosphate",
+                      ifelse(Fertilizer == "t_urea", "urea", Fertilizer)))))) 
+
+ggplot(data = long_df, aes(x = Year, y = Total_Amount, color = Fertilizer)) +
+  geom_line() +
+  labs(title = "Fertilizer Usage Over Years",
+       x = "Year",
+       y = "tons",
+       color = "Fertilizer Type")
+```
+
+```{r}
+crop_df = read_csv("crops.csv") %>%
+  rename(
+    corn_harvested = "CORN, GRAIN - ACRES HARVESTED",
+    corn_produced = "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+    corn_grain_per_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+    soybeans_harvested = "SOYBEANS - ACRES HARVESTED", 
+    soybeans_produced = "SOYBEANS - PRODUCTION, MEASURED IN BU",
+    soybeans_grain_per_acre = "SOYBEANS - YIELD, MEASURED IN BU / ACRE") %>%
+  select(Year, corn_harvested, corn_produced, corn_grain_per_acre, soybeans_harvested, soybeans_produced, soybeans_grain_per_acre) %>%
+  mutate(
+    across(where(is.numeric), ~replace_na(., 0))
+  )
+```
+
+```{r}
+yearly_crop_df = crop_df %>%
+  group_by(Year) %>%
+  summarize(
+    total_corn_harvested = sum(corn_harvested),
+    total_corn_produced = sum(corn_produced),
+    total_soybeans_harvested = sum(soybeans_harvested),
+    total_soybeans_produced = sum(soybeans_produced)
+  ) %>%
+  mutate(
+    corn_per_acre = total_corn_produced/total_corn_harvested,
+    soybeans_per_acre = total_soybeans_produced/total_corn_harvested
+  )
+```
+
+```{r}
+yearly_df <- merge(yearly_fertilizer_df, yearly_crop_df, by = "Year", all = FALSE)
+yearly_df = na.omit(yearly_df)
+yearly_df = yearly_df %>%
+  select(-c(Year, total_corn_harvested, total_corn_produced, total_soybeans_harvested, total_soybeans_produced))
+```
+
+```{r}
+library(corrplot)
+corrplot(cor(yearly_df), method = "color")
+```
+
+```{r}
+ggplot(data = yearly_df, aes(x = t_ammonia, y = corn_per_acre)) +
+  geom_point() +
+  labs(title = "Scatter Plot of t_ammonia vs. Corn per Acre",
+       x = "t_ammonia",
+       y = "Corn per Acre")
+```
+
+```{r}
+cor(yearly_df$t_ammonia, yearly_df$corn_per_acre)
+```
+
+```{r}
+ggplot(data = yearly_df, aes(x = t_urea, y = corn_per_acre)) +
+  geom_point() +
+  labs(title = "Scatter Plot of t_urea vs. Corn per Acre",
+       x = "t_urea",
+       y = "Corn per Acre")
+```
+
+```{r}
+cor(yearly_df$t_urea, yearly_df$corn_per_acre)
+```
